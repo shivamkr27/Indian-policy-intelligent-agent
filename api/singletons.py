@@ -4,7 +4,8 @@ Module-level singletons for the FastAPI backend.
 Mirrors the old Chainlit app's startup sequence (ui/app.py, now removed):
 build the heavy objects (embeddings, reranker, LLM, graph) exactly once,
 shared across all requests. No per-request/per-session state lives here —
-auth was removed, so every request runs as DEFAULT_USER_ID.
+per-request identity (api/deps.py::get_user_id) falls back to
+DEFAULT_USER_ID only when a request doesn't send an X-User-Id header.
 """
 
 from core.config import RATE_LIMIT_REQUESTS, RATE_LIMIT_WINDOW, HISTORY_DB_PATH

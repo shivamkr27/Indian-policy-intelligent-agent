@@ -17,22 +17,26 @@ last real answer (the final non-tool-call AIMessage), which is the same
 "last Q + last A" preview the old Chainlit app showed on conversation resume.
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from langchain_core.messages import AIMessage
 
 from api import singletons
+from api.deps import get_user_id
 
 router = APIRouter(tags=["conversations"])
 
 
 @router.get("/conversations")
-async def list_conversations():
-    user_id = singletons.DEFAULT_USER_ID
+async def list_conversations(user_id: str = Depends(get_user_id)):
     return {"conversations": singletons.history.list_user(user_id)}
 
 
 @router.get("/conversations/{thread_id}")
-async def get_conversation(thread_id: str):
+async def get_conversation(thread_id: str, user_id: str = Depends(get_user_id)):
+    owned = {c["thread_id"] for c in singletons.history.list_user(user_id)}
+    if thread_id not in owned:
+        raise HTTPException(404, "Conversation not found.")
+
     config = {"configurable": {"thread_id": thread_id}}
     state = await singletons.graph.aget_state(config)
     values = state.values
@@ -53,8 +57,7 @@ async def get_conversation(thread_id: str):
 
 
 @router.delete("/conversations/{thread_id}")
-async def delete_conversation(thread_id: str):
-    user_id = singletons.DEFAULT_USER_ID
+async def delete_conversation(thread_id: str, user_id: str = Depends(get_user_id)):
     deleted = singletons.history.delete(thread_id, user_id)
     if not deleted:
         raise HTTPException(404, "Conversation not found.")

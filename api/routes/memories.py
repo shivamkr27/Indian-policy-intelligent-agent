@@ -9,10 +9,11 @@ directly in the request body instead.
 import asyncio
 from typing import Literal
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from api import singletons
+from api.deps import get_user_id
 
 router = APIRouter(tags=["memories"])
 
@@ -29,14 +30,12 @@ class FeedbackRequest(BaseModel):
 
 
 @router.get("/memories")
-async def get_memories():
-    user_id = singletons.DEFAULT_USER_ID
+async def get_memories(user_id: str = Depends(get_user_id)):
     return {"memories": singletons.memory_store.get_all(user_id)}
 
 
 @router.post("/feedback")
-async def submit_feedback(req: FeedbackRequest):
-    user_id = singletons.DEFAULT_USER_ID
+async def submit_feedback(req: FeedbackRequest, user_id: str = Depends(get_user_id)):
     memory_type, importance, template = _FEEDBACK_COPY[req.rating]
     content = template.format(q=req.question[:80])
 

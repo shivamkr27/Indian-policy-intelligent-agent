@@ -8,9 +8,10 @@ import asyncio
 from pathlib import Path
 from typing import List
 
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
 
 from api import singletons
+from api.deps import get_user_id
 from core.config import DOCS_DIR, MAX_UPLOAD_SIZE_MB, SUPPORTED_UPLOAD_EXT
 from core.logging_config import get_logger
 
@@ -31,11 +32,13 @@ def _is_valid_pdf(content: bytes) -> bool:
 
 
 @router.post("/documents/upload")
-async def upload_documents(files: List[UploadFile] = File(...)):
+async def upload_documents(
+    files: List[UploadFile] = File(...),
+    user_id: str = Depends(get_user_id),
+):
     if len(files) > MAX_FILES_PER_UPLOAD:
         raise HTTPException(400, f"Upload at most {MAX_FILES_PER_UPLOAD} files at a time.")
 
-    user_id = singletons.DEFAULT_USER_ID
     max_bytes = MAX_UPLOAD_SIZE_MB * 1024 * 1024
     Path(DOCS_DIR).mkdir(parents=True, exist_ok=True)
 
@@ -76,15 +79,13 @@ async def upload_documents(files: List[UploadFile] = File(...)):
 
 
 @router.post("/documents/ingest-all")
-async def ingest_all_documents():
-    user_id = singletons.DEFAULT_USER_ID
+async def ingest_all_documents(user_id: str = Depends(get_user_id)):
     stats = await asyncio.to_thread(singletons.ingestion.ingest_all, DOCS_DIR, user_id)
     await asyncio.to_thread(singletons.tool_factory.rebuild_bm25)
     return stats
 
 
 @router.get("/documents")
-async def list_documents():
-    user_id = singletons.DEFAULT_USER_ID
+async def list_documents(user_id: str = Depends(get_user_id)):
     files = singletons.ingestion.list_ingested_files(user_id=user_id)
     return {"files": files}

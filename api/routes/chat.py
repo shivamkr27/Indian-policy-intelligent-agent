@@ -23,12 +23,13 @@ import json
 import re
 from typing import AsyncGenerator, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from langchain_core.messages import AIMessage, HumanMessage
 
 from api import singletons
+from api.deps import get_user_id
 from core.tools import user_id_ctx
 from core.logging_config import get_logger
 
@@ -60,8 +61,7 @@ def _sse(payload: dict) -> str:
     return f"data: {json.dumps(payload)}\n\n"
 
 
-async def _stream_chat(req: ChatRequest) -> AsyncGenerator[str, None]:
-    user_id = singletons.DEFAULT_USER_ID
+async def _stream_chat(req: ChatRequest, user_id: str) -> AsyncGenerator[str, None]:
     config = {"configurable": {"thread_id": req.thread_id}}
 
     singletons.history.upsert(req.thread_id, user_id)
@@ -184,10 +184,10 @@ async def _stream_chat(req: ChatRequest) -> AsyncGenerator[str, None]:
 
 
 @router.post("/chat/stream")
-async def chat_stream(req: ChatRequest):
+async def chat_stream(req: ChatRequest, user_id: str = Depends(get_user_id)):
     if not req.message.strip():
         raise HTTPException(400, "message must not be empty.")
     if not singletons.limiter.is_allowed(req.thread_id):
         raise HTTPException(429, "Too many requests. Please slow down.")
 
-    return StreamingResponse(_stream_chat(req), media_type="text/event-stream")
+    return StreamingResponse(_stream_chat(req, user_id), media_type="text/event-stream")

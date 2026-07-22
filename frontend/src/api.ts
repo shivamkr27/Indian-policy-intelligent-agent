@@ -7,8 +7,28 @@ import type {
 
 const BASE = "/api";
 
+/**
+ * Per-browser identity — no login screen. Generated once and persisted in
+ * localStorage; sent as X-User-Id on every request so the backend's existing
+ * per-user isolation (ChromaDB metadata filtering, conversation history,
+ * memories) applies per browser instead of everyone sharing "default".
+ */
+function getUserId(): string {
+  const KEY = "insightengine_user_id";
+  let id = localStorage.getItem(KEY);
+  if (!id) {
+    id = crypto.randomUUID();
+    localStorage.setItem(KEY, id);
+  }
+  return id;
+}
+
+function authHeaders(): Record<string, string> {
+  return { "X-User-Id": getUserId() };
+}
+
 export async function fetchConversations(): Promise<ConversationSummary[]> {
-  const res = await fetch(`${BASE}/conversations`);
+  const res = await fetch(`${BASE}/conversations`, { headers: authHeaders() });
   const data = await res.json();
   return data.conversations;
 }
@@ -16,17 +36,22 @@ export async function fetchConversations(): Promise<ConversationSummary[]> {
 export async function fetchConversation(
   threadId: string
 ): Promise<{ role: "user" | "assistant"; content: string }[]> {
-  const res = await fetch(`${BASE}/conversations/${encodeURIComponent(threadId)}`);
+  const res = await fetch(`${BASE}/conversations/${encodeURIComponent(threadId)}`, {
+    headers: authHeaders(),
+  });
   const data = await res.json();
   return data.messages;
 }
 
 export async function deleteConversation(threadId: string): Promise<void> {
-  await fetch(`${BASE}/conversations/${encodeURIComponent(threadId)}`, { method: "DELETE" });
+  await fetch(`${BASE}/conversations/${encodeURIComponent(threadId)}`, {
+    method: "DELETE",
+    headers: authHeaders(),
+  });
 }
 
 export async function fetchDocuments(): Promise<string[]> {
-  const res = await fetch(`${BASE}/documents`);
+  const res = await fetch(`${BASE}/documents`, { headers: authHeaders() });
   const data = await res.json();
   return data.files;
 }
@@ -34,17 +59,21 @@ export async function fetchDocuments(): Promise<string[]> {
 export async function uploadDocuments(files: File[]): Promise<DocumentUploadResult[]> {
   const form = new FormData();
   files.forEach((f) => form.append("files", f));
-  const res = await fetch(`${BASE}/documents/upload`, { method: "POST", body: form });
+  const res = await fetch(`${BASE}/documents/upload`, {
+    method: "POST",
+    headers: authHeaders(),
+    body: form,
+  });
   const data = await res.json();
   return data.results;
 }
 
 export async function ingestAllDocuments(): Promise<void> {
-  await fetch(`${BASE}/documents/ingest-all`, { method: "POST" });
+  await fetch(`${BASE}/documents/ingest-all`, { method: "POST", headers: authHeaders() });
 }
 
 export async function fetchMemories(): Promise<MemoryItem[]> {
-  const res = await fetch(`${BASE}/memories`);
+  const res = await fetch(`${BASE}/memories`, { headers: authHeaders() });
   const data = await res.json();
   return data.memories;
 }
@@ -55,7 +84,7 @@ export async function submitFeedback(
 ): Promise<void> {
   await fetch(`${BASE}/feedback`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({ question, rating }),
   });
 }
@@ -76,7 +105,7 @@ export async function streamChat(
 ): Promise<void> {
   const res = await fetch(`${BASE}/chat/stream`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({
       thread_id: params.threadId,
       message: params.message,
