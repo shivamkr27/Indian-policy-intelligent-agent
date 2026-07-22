@@ -1,0 +1,14 @@
+# Replace YOUR_DOMAIN with your actual domain (e.g. policy.example.com)
+# If you don't have a domain, delete this file and remove the caddy service
+# from docker-compose.yml — access the app directly at http://YOUR_IP:8000
+
+YOUR_DOMAIN {
+    reverse_proxy india-policy-agent:8000
+    encode gzip
+
+    header {
+        Strict-Transport-Security "max-age=31536000;"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+    }
+}
