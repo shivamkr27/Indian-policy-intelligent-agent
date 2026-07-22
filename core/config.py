@@ -85,9 +85,6 @@ HISTORY_DB_PATH = os.path.join(_DATA_DIR, "history.db")
 # Automatically disabled when user_id is "default" (no-auth / local dev).
 USER_ISOLATION = os.environ.get("USER_ISOLATION", "true").lower() != "false"
 
-# ── Study Mode ───────────────────────────────────────────────────────────────────
-STUDY_DB_PATH = os.path.join(_DATA_DIR, "study.db")
-
 # ── CRAG (Corrective RAG) ─────────────────────────────────────────────────────────
 GRADER_MODEL = "llama-3.1-8b-instant"
 
