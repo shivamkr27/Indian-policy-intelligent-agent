@@ -1,0 +1,52 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+@theme {
+  --color-bg:             #0b0c0f;
+  --color-bg-elevated:    #131417;
+  --color-surface:        #1c1d21;
+  --color-surface-hover:  #26272b;
+  --color-border:         rgba(255, 255, 255, 0.08);
+  --color-border-strong:  rgba(255, 255, 255, 0.16);
+  --color-text:           #e3e3e3;
+  --color-text-secondary: #9aa0a6;
+  --color-text-muted:     #6b6f76;
+  --color-accent:         #8ab4f8;
+  --color-accent-strong:  #669df6;
+  --color-accent-dim:     rgba(138, 180, 248, 0.12);
+  --color-user-bubble:    #1e2a3a;
+  --color-danger:         #f28b82;
+  --color-success:        #81c995;
+  --color-warning:        #fdd663;
+
+  --font-sans: "Google Sans", "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-surface-hover);
+  border-radius: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
