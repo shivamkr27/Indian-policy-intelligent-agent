@@ -59,6 +59,31 @@ class TestCaching:
         assert result["is_safe"] is True
         assert result["badge"] == "🟢 Verified"
 
+    def test_cache_evicts_oldest_entry_beyond_max_size(self, mock_llm):
+        from core.judge import JudgeResult
+        judge = HallucinationJudge(max_cache_size=3)
+        mock_llm.invoke.return_value = JudgeResult(score=1, reason="Grounded.", is_safe=True)
+
+        for i in range(4):
+            judge.score(f"Q{i}", "context", "answer", mock_llm)
+
+        assert len(judge._cache) == 3
+        assert judge._cache_key("Q0", "context", "answer") not in judge._cache
+        assert judge._cache_key("Q3", "context", "answer") in judge._cache
+
+    def test_cache_hit_refreshes_lru_order(self, mock_llm):
+        from core.judge import JudgeResult
+        judge = HallucinationJudge(max_cache_size=2)
+        mock_llm.invoke.return_value = JudgeResult(score=1, reason="Grounded.", is_safe=True)
+
+        judge.score("Q0", "context", "answer", mock_llm)
+        judge.score("Q1", "context", "answer", mock_llm)
+        judge.score("Q0", "context", "answer", mock_llm)  # re-hit Q0 — should refresh its position
+        judge.score("Q2", "context", "answer", mock_llm)  # forces eviction of least-recently-used
+
+        assert judge._cache_key("Q0", "context", "answer") in judge._cache
+        assert judge._cache_key("Q1", "context", "answer") not in judge._cache
+
 
 class TestCacheKey:
     def test_same_inputs_same_key(self):

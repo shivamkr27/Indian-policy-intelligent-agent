@@ -1,15 +1,18 @@
 """
-Ingestion pipeline: PDF → Markdown → Parent-Child chunks → ChromaDB + SQLite parent store
+Ingestion pipeline: PDF/DOCX/TXT → text → Parent-Child chunks → ChromaDB + SQLite parent store
 
 WHY two levels of chunks?
   - Child chunks (500 chars) → used for vector search (precise, focused match)
   - Parent chunks (2000-4000 chars) → passed to LLM (more context around the match)
   This is the "Parent-Document Retriever" pattern.
 
-Flow per PDF:
-  PDF
-   └► pymupdf4llm → Markdown text
-         └► MarkdownHeaderTextSplitter → parent sections (by H1/H2/H3)
+Flow per file:
+  PDF  → pymupdf4llm → Markdown text (has # H1/H2/H3 headers)
+  DOCX → python-docx → plain paragraph text (no headers)
+  TXT  → read directly → plain text (no headers)
+         └► MarkdownHeaderTextSplitter → parent sections (by H1/H2/H3 when present;
+            falls back to a single section that _split_large_parents then size-splits
+            when there are no markdown headers, e.g. DOCX/TXT sources)
                ├► merge tiny / split huge → cleaned parents
                ├► save each parent row to SQLite (parent_store.db)
                └► RecursiveCharacterTextSplitter → child chunks
@@ -39,10 +42,25 @@ from .config import (
     CHILD_CHUNK_SIZE, CHILD_CHUNK_OVERLAP,
     MIN_PARENT_SIZE, MAX_PARENT_SIZE,
     HEADERS_TO_SPLIT_ON, USER_ISOLATION,
+    SUPPORTED_UPLOAD_EXT,
 )
 from .logging_config import get_logger
 
 logger = get_logger(__name__)
+
+
+def _extract_text(file_path: Path) -> str:
+    """Extract text/markdown from a supported document type (.pdf, .docx, .txt)."""
+    ext = file_path.suffix.lower()
+    if ext == ".pdf":
+        return pymupdf4llm.to_markdown(str(file_path))
+    if ext == ".docx":
+        from docx import Document as DocxDocument
+        doc = DocxDocument(str(file_path))
+        return "\n\n".join(p.text for p in doc.paragraphs if p.text.strip())
+    if ext == ".txt":
+        return file_path.read_text(encoding="utf-8", errors="ignore")
+    raise ValueError(f"Unsupported file type: {ext} (supported: {SUPPORTED_UPLOAD_EXT})")
 
 
 # ── Parent Store (SQLite) ──────────────────────────────────────────────────────
@@ -126,9 +144,10 @@ class _DocumentChunker:
         )
 
     def chunk(
-        self, markdown_text: str, doc_stem: str
+        self, text: str, filename: str
     ) -> Tuple[List[Tuple[str, Document]], List[Document]]:
-        raw_sections = self._header_splitter.split_text(markdown_text)
+        doc_stem = Path(filename).stem
+        raw_sections = self._header_splitter.split_text(text)
 
         parents = self._merge_small_parents(raw_sections)
         parents = self._split_large_parents(parents)
@@ -140,7 +159,7 @@ class _DocumentChunker:
         for i, parent_doc in enumerate(parents):
             parent_id = f"{doc_stem}_parent_{i}"
             parent_doc.metadata.update({
-                "source": f"{doc_stem}.pdf",
+                "source": filename,
                 "parent_id": parent_id,
             })
             parent_pairs.append((parent_id, parent_doc))
@@ -248,35 +267,38 @@ class Ingestion:
     # ── Public API ─────────────────────────────────────────────────────────
 
     def ingest_all(self, docs_dir: str = DOCS_DIR, user_id: str = "default") -> Dict:
-        pdf_files = glob.glob(os.path.join(docs_dir, "*.pdf"))
-        if not pdf_files:
-            logger.warning(f"No PDFs found in {docs_dir}")
+        doc_files = [
+            f for ext in SUPPORTED_UPLOAD_EXT
+            for f in glob.glob(os.path.join(docs_dir, f"*{ext}"))
+        ]
+        if not doc_files:
+            logger.warning(f"No supported documents found in {docs_dir}")
             return {"ingested": [], "skipped": []}
 
         already_done = set(self._parent_store.all_sources(user_id=user_id))
         ingested, skipped = [], []
 
-        for pdf_path in sorted(pdf_files):
-            filename = os.path.basename(pdf_path)
+        for doc_path in sorted(doc_files):
+            filename = os.path.basename(doc_path)
             if filename in already_done:
                 logger.info(f"Skipping (already ingested): {filename}")
                 skipped.append(filename)
                 continue
-            stats = self.ingest_single(pdf_path, user_id=user_id)
+            stats = self.ingest_single(doc_path, user_id=user_id)
             ingested.append({"file": filename, **stats})
 
         logger.info(f"Ingest complete — {len(ingested)} ingested, {len(skipped)} skipped.")
         return {"ingested": ingested, "skipped": skipped}
 
-    def ingest_single(self, pdf_path: str, user_id: str = "default") -> Dict:
-        pdf_path = Path(pdf_path)
-        logger.info(f"Ingesting: {pdf_path.name} (user={user_id})")
+    def ingest_single(self, file_path: str, user_id: str = "default") -> Dict:
+        file_path = Path(file_path)
+        logger.info(f"Ingesting: {file_path.name} (user={user_id})")
 
         try:
-            markdown = pymupdf4llm.to_markdown(str(pdf_path))
+            text = _extract_text(file_path)
 
-            parent_pairs, child_chunks = self._chunker.chunk(markdown, pdf_path.stem)
-            logger.info(f"{pdf_path.name}: {len(parent_pairs)} parents | {len(child_chunks)} children")
+            parent_pairs, child_chunks = self._chunker.chunk(text, file_path.name)
+            logger.info(f"{file_path.name}: {len(parent_pairs)} parents | {len(child_chunks)} children")
 
             for parent_id, parent_doc in parent_pairs:
                 self._parent_store.save(
@@ -291,12 +313,12 @@ class Ingestion:
                 chunk.metadata["user_id"] = user_id
 
             self._vectorstore.add_documents(child_chunks)
-            logger.info(f"{pdf_path.name}: embedding done")
+            logger.info(f"{file_path.name}: embedding done")
 
             return {"parent_chunks": len(parent_pairs), "child_chunks": len(child_chunks)}
 
         except Exception as e:
-            logger.error(f"Ingestion failed for {pdf_path.name}: {e}", exc_info=True)
+            logger.error(f"Ingestion failed for {file_path.name}: {e}", exc_info=True)
             return {"error": str(e)}
 
     def get_vectorstore(self) -> Chroma:

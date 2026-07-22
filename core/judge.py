@@ -12,11 +12,15 @@ Score scale:
 """
 
 import hashlib
+from collections import OrderedDict
 
 from pydantic import BaseModel, Field
 from langchain_core.messages import SystemMessage, HumanMessage
 
-from .config import HALLUCINATION_SAFE_THRESHOLD, HALLUCINATION_WARN_THRESHOLD
+from .config import (
+    HALLUCINATION_SAFE_THRESHOLD, HALLUCINATION_WARN_THRESHOLD,
+    JUDGE_CACHE_MAX_SIZE,
+)
 from .logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -58,10 +62,13 @@ class HallucinationJudge:
     """
     Evaluates the final answer against the retrieved context.
     Results are cached by content hash to avoid redundant LLM calls.
+    The cache is bounded (LRU eviction) so it can't grow unbounded over
+    a long-running server's lifetime.
     """
 
-    def __init__(self):
-        self._cache: dict[str, dict] = {}
+    def __init__(self, max_cache_size: int = JUDGE_CACHE_MAX_SIZE):
+        self._cache: OrderedDict[str, dict] = OrderedDict()
+        self._max_cache_size = max_cache_size
 
     def _cache_key(self, question: str, context: str, answer: str) -> str:
         payload = f"{question}|{context[:500]}|{answer[:500]}"
@@ -81,6 +88,7 @@ class HallucinationJudge:
         key = self._cache_key(question, context, answer)
         if key in self._cache:
             logger.info("HallucinationJudge: cache hit")
+            self._cache.move_to_end(key)
             return self._cache[key]
 
         context_trimmed = context[:3000] if len(context) > 3000 else context
@@ -105,6 +113,8 @@ class HallucinationJudge:
                 "badge":   self._badge(result.score),
             }
             self._cache[key] = output
+            if len(self._cache) > self._max_cache_size:
+                self._cache.popitem(last=False)  # evict least-recently-used
             return output
         except Exception as e:
             logger.warning(f"HallucinationJudge failed: {e}")

@@ -1,8 +1,8 @@
-"""Unit tests for core/ingestion.py — _ParentStore SQLite backend."""
+"""Unit tests for core/ingestion.py — _ParentStore SQLite backend, text extraction, chunking."""
 
 import json
 import pytest
-from core.ingestion import _ParentStore
+from core.ingestion import _ParentStore, _extract_text, _DocumentChunker
 
 
 class TestParentStoreSQLite:
@@ -72,3 +72,51 @@ class TestParentStoreSQLite:
         store.clear(user_id="alice")
         assert store.all_sources(user_id="alice") == []
         assert store.all_sources(user_id="bob")   == ["b.pdf"]
+
+
+class TestExtractText:
+    def test_txt_file_read_directly(self, tmp_path):
+        f = tmp_path / "notes.txt"
+        f.write_text("Plain text content.\nSecond line.", encoding="utf-8")
+        assert _extract_text(f) == "Plain text content.\nSecond line."
+
+    def test_docx_file_extracts_paragraphs(self, tmp_path):
+        docx = pytest.importorskip("docx")
+        f = tmp_path / "report.docx"
+        doc = docx.Document()
+        doc.add_paragraph("First paragraph.")
+        doc.add_paragraph("")  # blank paragraphs should be dropped
+        doc.add_paragraph("Second paragraph.")
+        doc.save(str(f))
+
+        text = _extract_text(f)
+        assert "First paragraph." in text
+        assert "Second paragraph." in text
+
+    def test_unsupported_extension_raises(self, tmp_path):
+        f = tmp_path / "image.png"
+        f.write_bytes(b"\x89PNG")
+        with pytest.raises(ValueError, match="Unsupported file type"):
+            _extract_text(f)
+
+
+class TestDocumentChunkerSourceMetadata:
+    def test_source_metadata_matches_actual_filename_not_hardcoded_pdf(self):
+        chunker = _DocumentChunker()
+        long_text = "This is plain text with no markdown headers. " * 200
+
+        parent_pairs, child_chunks = chunker.chunk(long_text, "notes.txt")
+
+        assert parent_pairs, "expected at least one parent chunk"
+        for _, parent_doc in parent_pairs:
+            assert parent_doc.metadata["source"] == "notes.txt"
+        for child in child_chunks:
+            assert child.metadata["source"] == "notes.txt"
+
+    def test_source_metadata_preserves_pdf_filename(self):
+        chunker = _DocumentChunker()
+        text = "# Heading\n\n" + ("Some markdown content. " * 200)
+
+        parent_pairs, _ = chunker.chunk(text, "budget_2024.pdf")
+
+        assert all(doc.metadata["source"] == "budget_2024.pdf" for _, doc in parent_pairs)

@@ -6,9 +6,13 @@ __pycache__/
 chroma_db/
 parent_store/
 data/*.db
+data/*.db-shm
+data/*.db-wal
 data/bm25_cache.pkl
 llm_cache.db
 *.db
+*.db-shm
+*.db-wal
 
 # Model cache
 .model_cache/

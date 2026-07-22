@@ -13,6 +13,9 @@ DATA_DIR          = _DATA_DIR
 CHROMA_DB_PATH    = os.path.join(_BASE_DIR, "chroma_db")
 PARENT_STORE_PATH = os.path.join(_BASE_DIR, "parent_store")   # kept for volume-mount compat
 
+# ── Document ingestion ────────────────────────────────────────────────────────
+SUPPORTED_UPLOAD_EXT = (".pdf", ".docx", ".txt")
+
 # ── ChromaDB ───────────────────────────────────────────────────────────────────
 COLLECTION_NAME = "india_policy_docs"
 # Set CHROMA_HOST to switch from local disk to client-server mode
@@ -26,7 +29,6 @@ RERANKER_MODEL  = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 LLM_TEMPERATURE = 0
 
 # ── LLM provider ───────────────────────────────────────────────────────────────
-LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "groq")
 LLM_TIMEOUT  = int(os.environ.get("LLM_TIMEOUT_SECONDS", "30"))
 
 # ── Retrieval ──────────────────────────────────────────────────────────────────
@@ -59,6 +61,7 @@ HEADERS_TO_SPLIT_ON   = [
 # ── Hallucination judge ────────────────────────────────────────────────────────
 HALLUCINATION_SAFE_THRESHOLD = 2
 HALLUCINATION_WARN_THRESHOLD = 4
+JUDGE_CACHE_MAX_SIZE          = 500  # bounded LRU cache — prevents unbounded memory growth
 
 # ── SQLite paths ───────────────────────────────────────────────────────────────
 SQLITE_DB_PATH          = os.path.join(_DATA_DIR, "budget.db")

@@ -7,25 +7,21 @@ Pipeline:
     ├─ summarize_history     Keep conversation context compact; inject user memories
     ├─ rewrite_query         Clarify + split into sub-questions (structured output)
     │   └─[unclear?]─► request_clarification  (HITL interrupt)
-    ├─ route_query           Classify: rag | sql | multi_hop | compare
+    ├─ route_query           Classify: rag | sql | multi_hop
     │
     ├─[RAG]──► agent subgraph × N  (parallel, one per rewritten question)
     │           orchestrator → search_chunks → retrieval_grader → compress_context → collect_answer
     │           CRAG: if grade=irrelevant (<2 retries) → query_rewriter_loop → orchestrator
-    │           └─► after_agents (router) ──► aggregate_answers (RAG)
-    │                                    └──► diff_synthesizer  (compare)
+    │           └─► aggregate_answers
     │
     ├─[SQL]──► text2sql_node   NL → SQL → SQLite → result string
     │
     ├─[multi_hop]──► reasoning_planner → execute_reasoning_step (self-loop) → reasoning_synthesizer
     │
-    ├─[compare]──► two parallel agents, each locked to one doc → diff_synthesizer
-    │
     ├─ hallucination_judge   Score answer 1-5; add badge to state
     └─ END
 
-Checkpointer (SqliteSaver) is created via create_checkpointer() and shared
-with the study graph so both use the same checkpoints.db.
+Checkpointer (SqliteSaver) is created via create_checkpointer().
 """
 
 import operator
@@ -62,7 +58,6 @@ from .prompts import (
     get_fallback_prompt,
     get_compress_prompt,
     get_aggregation_prompt,
-    get_diff_synthesizer_prompt,
     get_multi_hop_synthesizer_prompt,
 )
 from .judge import HallucinationJudge
@@ -137,9 +132,6 @@ class State(MessagesState):
     judge_badge:         str   = ""
     # Feature: Hindi Answer Mode
     answer_language:     str   = "english"
-    # Feature: Document Comparison Mode
-    compare_doc_a:       str   = ""
-    compare_doc_b:       str   = ""
     # Feature: Persistent Semantic Memory
     user_memories:       List[str] = []
     # Feature: Multi-Hop Reasoning
@@ -280,10 +272,6 @@ def request_clarification(state: State) -> dict:
 
 
 def route_query_node(state: State, llm) -> dict:
-    # If compare mode was set from the UI, preserve it — don't let the LLM overwrite it
-    if state.get("query_type") == "compare":
-        return {"query_type": "compare"}
-
     combined_q = " | ".join(state["rewritten_questions"])
     try:
         structured_llm = llm.with_structured_output(QueryRoute)
@@ -344,35 +332,6 @@ def aggregate_answers(state: State, llm) -> dict:
         logger.error(f"aggregate_answers failed: {e}", exc_info=True)
         fallback = sorted_answers[0]["answer"] if sorted_answers else "Unable to generate a response."
         return {"messages": [AIMessage(content=fallback)]}
-
-
-def diff_synthesizer_node(state: State, llm) -> dict:
-    """Synthesize a structured comparison when two agents searched different documents."""
-    lang    = state.get("answer_language", "english")
-    answers = [a for a in state.get("agent_answers", []) if not a.get("__reset__")]
-
-    if len(answers) < 2:
-        return aggregate_answers(state, llm)
-
-    sorted_answers = sorted(answers, key=lambda x: x.get("index", 0))
-    doc_a  = state.get("compare_doc_a", "Document A")
-    doc_b  = state.get("compare_doc_b", "Document B")
-    topic  = state.get("original_query", "the topic")
-
-    combined = (
-        f"Document A ({doc_a}):\n{sorted_answers[0]['answer']}\n\n"
-        f"Document B ({doc_b}):\n{sorted_answers[1]['answer']}"
-    )
-
-    try:
-        response = llm.invoke([
-            SystemMessage(content=get_diff_synthesizer_prompt(language=lang)),
-            HumanMessage(content=f"Comparison topic: {topic}\n\n{combined}"),
-        ])
-        return {"messages": [AIMessage(content=response.content)]}
-    except Exception as e:
-        logger.error(f"diff_synthesizer_node failed: {e}", exc_info=True)
-        return {"messages": [AIMessage(content=combined)]}
 
 
 def hallucination_judge_node(state: State, llm, judge: HallucinationJudge) -> dict:
@@ -750,41 +709,6 @@ def route_after_route_query(state: State):
     if qt == "multi_hop":
         return "reasoning_planner"
 
-    if qt == "compare":
-        topic = state["rewritten_questions"][0]
-        doc_a = state.get("compare_doc_a", "")
-        doc_b = state.get("compare_doc_b", "")
-        return [
-            Send("agent", {
-                "question":            f"What does the document say about: {topic}",
-                "question_index":      0,
-                "doc_filter":          doc_a,
-                "answer_language":     lang,
-                "user_memories":       state.get("user_memories", []),
-                "web_search_enabled":  web_search_enabled,
-                "messages":            [],
-                "context_summary":     "",
-                "retrieval_keys":      set(),
-                "tool_call_count":     0,
-                "iteration_count":     0,
-                "retrieval_attempts":  0,
-            }),
-            Send("agent", {
-                "question":            f"What does the document say about: {topic}",
-                "question_index":      1,
-                "doc_filter":          doc_b,
-                "answer_language":     lang,
-                "user_memories":       state.get("user_memories", []),
-                "web_search_enabled":  web_search_enabled,
-                "messages":            [],
-                "context_summary":     "",
-                "retrieval_keys":      set(),
-                "tool_call_count":     0,
-                "iteration_count":     0,
-                "retrieval_attempts":  0,
-            }),
-        ]
-
     # Default RAG
     return [
         Send("agent", {
@@ -832,13 +756,6 @@ def route_reasoning_steps(state: State) -> str:
     if state.get("current_step_index", 0) < len(state.get("reasoning_steps", [])):
         return "execute_reasoning_step"
     return "reasoning_synthesizer"
-
-
-def _after_agents_router(state: State) -> Command:
-    """Fan-in router: sends to diff_synthesizer for compare mode, aggregate for RAG."""
-    if state.get("query_type") == "compare":
-        return Command(goto="diff_synthesizer")
-    return Command(goto="aggregate_answers")
 
 
 # ── Checkpointer factory ───────────────────────────────────────────────────────
@@ -922,9 +839,7 @@ def build_graph(
     main_builder.add_node("request_clarification",   request_clarification)
     main_builder.add_node("route_query",             partial(route_query_node, llm=llm))
     main_builder.add_node("agent",                   agent_subgraph)
-    main_builder.add_node("after_agents",            _after_agents_router)
     main_builder.add_node("aggregate_answers",       partial(aggregate_answers, llm=llm))
-    main_builder.add_node("diff_synthesizer",        partial(diff_synthesizer_node, llm=llm))
     main_builder.add_node("text2sql_node",           partial(text2sql_node, llm=llm, sql_engine=sql_engine))
     # Multi-hop nodes
     main_builder.add_node("reasoning_planner",       partial(reasoning_planner, llm=llm))
@@ -938,10 +853,9 @@ def build_graph(
     main_builder.add_edge("request_clarification",   "rewrite_query")
     main_builder.add_conditional_edges("route_query",    route_after_route_query)
 
-    # Fan-in from parallel agents → router → aggregate or diff
-    main_builder.add_edge(["agent"],                 "after_agents")
+    # Fan-in from parallel agents → aggregate
+    main_builder.add_edge(["agent"],                 "aggregate_answers")
     main_builder.add_edge("aggregate_answers",       "hallucination_judge")
-    main_builder.add_edge("diff_synthesizer",        "hallucination_judge")
     main_builder.add_edge("text2sql_node",           "hallucination_judge")
 
     # Multi-hop: reasoning_planner → execute_reasoning_step (self-loop) → reasoning_synthesizer
