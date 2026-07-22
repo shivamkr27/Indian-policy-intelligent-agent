@@ -14,10 +14,11 @@ import {
   submitFeedback,
   uploadDocuments,
 } from "./api";
+import { generateId } from "./utils";
 import type { ChatMessage, ConversationSummary, MemoryItem } from "./types";
 
 function newThreadId(): string {
-  return crypto.randomUUID();
+  return generateId();
 }
 
 export default function App() {
@@ -63,8 +64,8 @@ export default function App() {
   };
 
   const handleSend = async (text: string) => {
-    const userMsg: ChatMessage = { id: crypto.randomUUID(), role: "user", content: text };
-    const assistantId = crypto.randomUUID();
+    const userMsg: ChatMessage = { id: generateId(), role: "user", content: text };
+    const assistantId = generateId();
     const assistantMsg: ChatMessage = {
       id: assistantId,
       role: "assistant",

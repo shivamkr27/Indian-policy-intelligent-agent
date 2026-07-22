@@ -1,3 +1,4 @@
+import { generateId } from "./utils";
 import type {
   ChatStreamEvent,
   ConversationSummary,
@@ -17,7 +18,7 @@ function getUserId(): string {
   const KEY = "insightengine_user_id";
   let id = localStorage.getItem(KEY);
   if (!id) {
-    id = crypto.randomUUID();
+    id = generateId();
     localStorage.setItem(KEY, id);
   }
   return id;
