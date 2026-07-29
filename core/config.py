@@ -64,8 +64,6 @@ HALLUCINATION_WARN_THRESHOLD = 4
 JUDGE_CACHE_MAX_SIZE          = 500  # bounded LRU cache — prevents unbounded memory growth
 
 # ── SQLite paths ───────────────────────────────────────────────────────────────
-SQLITE_DB_PATH          = os.path.join(_DATA_DIR, "budget.db")
-BUDGET_CSV_PATH         = os.path.join(_DATA_DIR, "budget_data.csv")
 SQLITE_CHECKPOINT_PATH  = os.path.join(_DATA_DIR, "checkpoints.db")
 PARENT_STORE_DB_PATH    = os.path.join(_DATA_DIR, "parent_store.db")
 BM25_CACHE_PATH         = os.path.join(_DATA_DIR, "bm25_cache.pkl")
@@ -76,6 +74,10 @@ RATE_LIMIT_WINDOW   = int(os.environ.get("RATE_LIMIT_WINDOW_SECONDS", "60"))
 
 # ── File upload ────────────────────────────────────────────────────────────────
 MAX_UPLOAD_SIZE_MB = int(os.environ.get("MAX_UPLOAD_SIZE_MB", "50"))
+# Total storage cap per user (all their uploaded files combined) — protects the
+# shared server disk from a single user's uploads, since everything lands on
+# the one machine running the backend (there is no per-user physical disk).
+MAX_USER_STORAGE_MB = int(os.environ.get("MAX_USER_STORAGE_MB", "50"))
 
 # ── Conversation history ────────────────────────────────────────────────────────
 HISTORY_DB_PATH = os.path.join(_DATA_DIR, "history.db")

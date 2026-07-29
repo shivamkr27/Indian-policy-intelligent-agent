@@ -42,7 +42,6 @@ def tmp_data_dir(tmp_path):
     import core.config as cfg
     original = cfg.DATA_DIR
     cfg.DATA_DIR = str(tmp_path)
-    cfg.SQLITE_DB_PATH = str(tmp_path / "budget.db")
     cfg.SQLITE_CHECKPOINT_PATH = str(tmp_path / "checkpoints.db")
     cfg.PARENT_STORE_DB_PATH = str(tmp_path / "parent_store.db")
     cfg.BM25_CACHE_PATH = str(tmp_path / "bm25_cache.pkl")

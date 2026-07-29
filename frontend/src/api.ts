@@ -57,6 +57,13 @@ export async function fetchDocuments(): Promise<string[]> {
   return data.files;
 }
 
+export async function deleteDocument(filename: string): Promise<void> {
+  await fetch(`${BASE}/documents/${encodeURIComponent(filename)}`, {
+    method: "DELETE",
+    headers: authHeaders(),
+  });
+}
+
 export async function uploadDocuments(files: File[]): Promise<DocumentUploadResult[]> {
   const form = new FormData();
   files.forEach((f) => form.append("files", f));

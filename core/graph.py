@@ -7,14 +7,12 @@ Pipeline:
     ├─ summarize_history     Keep conversation context compact; inject user memories
     ├─ rewrite_query         Clarify + split into sub-questions (structured output)
     │   └─[unclear?]─► request_clarification  (HITL interrupt)
-    ├─ route_query           Classify: rag | sql | multi_hop
+    ├─ route_query           Classify: rag | multi_hop
     │
     ├─[RAG]──► agent subgraph × N  (parallel, one per rewritten question)
     │           orchestrator → search_chunks → retrieval_grader → compress_context → collect_answer
     │           CRAG: if grade=irrelevant (<2 retries) → query_rewriter_loop → orchestrator
     │           └─► aggregate_answers
-    │
-    ├─[SQL]──► text2sql_node   NL → SQL → SQLite → result string
     │
     ├─[multi_hop]──► reasoning_planner → execute_reasoning_step (self-loop) → reasoning_synthesizer
     │
@@ -63,7 +61,6 @@ from .prompts import (
 from .judge import HallucinationJudge
 from .tools import ToolFactory, _format_search_results
 from .retrieval_grader import RetrievalGrader
-from .text2sql import Text2SQLEngine
 from .utils import invoke_with_retry
 from .logging_config import get_logger
 
@@ -90,9 +87,9 @@ class QueryAnalysis(BaseModel):
     )
 
 class QueryRoute(BaseModel):
-    route: Literal["rag", "sql", "multi_hop"] = Field(
+    route: Literal["rag", "multi_hop"] = Field(
         description=(
-            "rag for policy/text questions, sql for budget number queries, "
+            "rag for policy/text questions, "
             "multi_hop for questions requiring chaining multiple distinct facts."
         )
     )
@@ -125,7 +122,6 @@ class State(MessagesState):
     rewritten_questions: List[str] = []
     agent_answers:       Annotated[List[dict], _accumulate_or_reset] = []
     query_type:          str   = "rag"
-    sql_result:          str   = ""
     judge_score:         int   = 0
     judge_reason:        str   = ""
     judge_is_safe:       bool  = True
@@ -285,28 +281,6 @@ def route_query_node(state: State, llm) -> dict:
         return {"query_type": "rag"}
 
 
-def text2sql_node(state: State, llm, sql_engine: Text2SQLEngine) -> dict:
-    question = state["rewritten_questions"][0]
-    lang     = state.get("answer_language", "english")
-    try:
-        sql_result = sql_engine.query(question, llm)
-        label      = "बजट डेटा परिणाम" if lang == "hindi" else "Budget Data Result"
-        formatted  = f"**{label}:**\n\n```\n{sql_result}\n```"
-        return {
-            "sql_result": sql_result,
-            "messages":   [AIMessage(content=formatted)],
-            "agent_answers": [{"index": 0, "question": question, "answer": sql_result}],
-        }
-    except Exception as e:
-        logger.error(f"text2sql_node failed: {e}", exc_info=True)
-        msg = "Unable to query budget data at this time. Please try again."
-        return {
-            "sql_result": "",
-            "messages":   [AIMessage(content=msg)],
-            "agent_answers": [{"index": 0, "question": question, "answer": msg}],
-        }
-
-
 def aggregate_answers(state: State, llm) -> dict:
     lang    = state.get("answer_language", "english")
     answers = [a for a in state.get("agent_answers", []) if not a.get("__reset__")]
@@ -314,6 +288,14 @@ def aggregate_answers(state: State, llm) -> dict:
         return {"messages": [AIMessage(content="No answers were generated from the documents.")]}
 
     sorted_answers = sorted(answers, key=lambda x: x.get("index", 0))
+
+    # Single sub-question (the common case, e.g. greetings/simple lookups) — pass the
+    # agent's answer through unchanged. Running it through the aggregation LLM here
+    # produced a bogus "Sources: Answer 1" footer, since the prompt always asks for a
+    # citation list even when there's nothing to merge or cite.
+    if len(sorted_answers) == 1:
+        return {"messages": [AIMessage(content=sorted_answers[0]["answer"])]}
+
     combined = "\n\n".join(
         f"Answer {i+1}:\n{a['answer']}"
         for i, a in enumerate(sorted_answers)
@@ -343,11 +325,8 @@ def hallucination_judge_node(state: State, llm, judge: HallucinationJudge) -> di
             final_answer = msg.content
             break
 
-    if state.get("query_type") == "sql":
-        context = state.get("sql_result", "")
-    else:
-        answers = [a for a in state.get("agent_answers", []) if not a.get("__reset__")]
-        context = "\n\n---\n\n".join(a.get("answer", "") for a in answers)
+    answers = [a for a in state.get("agent_answers", []) if not a.get("__reset__")]
+    context = "\n\n---\n\n".join(a.get("answer", "") for a in answers)
 
     try:
         result = judge.score(question, context, final_answer, llm)
@@ -485,11 +464,8 @@ def orchestrator(state: AgentState, llm_no_web, llm_with_web) -> dict:
     try:
         if not state.get("messages"):
             human_msg = HumanMessage(content=state["question"])
-            force_msg = HumanMessage(
-                content="You MUST call search_chunks as your first action to find relevant documents."
-            )
             response = invoke_with_retry(
-                active_llm, [sys_msg] + compressed_msgs + [human_msg, force_msg]
+                active_llm, [sys_msg] + compressed_msgs + [human_msg]
             )
             return {
                 "messages":        [human_msg, response],
@@ -703,9 +679,6 @@ def route_after_route_query(state: State):
     lang               = state.get("answer_language", "english")
     web_search_enabled = state.get("web_search_enabled", False)
 
-    if qt == "sql":
-        return "text2sql_node"
-
     if qt == "multi_hop":
         return "reasoning_planner"
 
@@ -779,7 +752,6 @@ async def create_checkpointer(db_path: str = SQLITE_CHECKPOINT_PATH):
 def build_graph(
     llm,
     tool_factory: ToolFactory,
-    sql_engine: Text2SQLEngine,
     judge: HallucinationJudge,
     checkpointer=None,
 ):
@@ -840,7 +812,6 @@ def build_graph(
     main_builder.add_node("route_query",             partial(route_query_node, llm=llm))
     main_builder.add_node("agent",                   agent_subgraph)
     main_builder.add_node("aggregate_answers",       partial(aggregate_answers, llm=llm))
-    main_builder.add_node("text2sql_node",           partial(text2sql_node, llm=llm, sql_engine=sql_engine))
     # Multi-hop nodes
     main_builder.add_node("reasoning_planner",       partial(reasoning_planner, llm=llm))
     main_builder.add_node("execute_reasoning_step",  partial(execute_reasoning_step, tool_factory=tool_factory))
@@ -856,7 +827,6 @@ def build_graph(
     # Fan-in from parallel agents → aggregate
     main_builder.add_edge(["agent"],                 "aggregate_answers")
     main_builder.add_edge("aggregate_answers",       "hallucination_judge")
-    main_builder.add_edge("text2sql_node",           "hallucination_judge")
 
     # Multi-hop: reasoning_planner → execute_reasoning_step (self-loop) → reasoning_synthesizer
     main_builder.add_edge("reasoning_planner",       "execute_reasoning_step")

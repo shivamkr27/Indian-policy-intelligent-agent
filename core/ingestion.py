@@ -127,6 +127,16 @@ class _ParentStore:
                 self._conn.execute("DELETE FROM parents")
             self._conn.commit()
 
+    def delete_source(self, source: str, user_id: str = None) -> None:
+        with self._lock:
+            if user_id and user_id != "default" and USER_ISOLATION:
+                self._conn.execute(
+                    "DELETE FROM parents WHERE source = ? AND user_id = ?", (source, user_id)
+                )
+            else:
+                self._conn.execute("DELETE FROM parents WHERE source = ?", (source,))
+            self._conn.commit()
+
 
 # ── Document Chunker ───────────────────────────────────────────────────────────
 
@@ -335,6 +345,20 @@ class Ingestion:
 
     def list_ingested_files(self, user_id: str = None) -> List[str]:
         return sorted(self._parent_store.all_sources(user_id=user_id))
+
+    def delete_document(self, filename: str, user_id: str = "default") -> None:
+        """Remove one document's chunks from ChromaDB and the parent store."""
+        apply_user = USER_ISOLATION and user_id not in ("default", "all")
+        where = (
+            {"$and": [{"user_id": user_id}, {"source": filename}]}
+            if apply_user else {"source": filename}
+        )
+        matches = self._vectorstore.get(where=where, include=[])
+        ids = matches.get("ids") or []
+        if ids:
+            self._vectorstore.delete(ids=ids)
+        self._parent_store.delete_source(filename, user_id=user_id)
+        logger.info(f"Deleted document '{filename}' (user={user_id}): {len(ids)} chunks removed.")
 
     def clear_all(self, user_id: str = None) -> None:
         logger.info(f"Clearing data for user={user_id or 'all'}...")

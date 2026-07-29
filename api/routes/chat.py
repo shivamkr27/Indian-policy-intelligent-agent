@@ -9,13 +9,6 @@ Ports the old Chainlit app's _run_graph(). Key differences from the original:
    Chainlit app's resume_conversation bug got wrong (a stale flag from a
    different thread could leak in and cause a silent no-op resume).
 
-2. "text2sql_node" is deliberately NOT treated as a token-streaming answer
-   node. In the old app it was, which meant on_chat_model_stream events fired
-   for the LLM call that generates the *SQL query string* inside
-   Text2SQLEngine.query() — that raw SQL got streamed into the chat bubble
-   instead of the actual formatted result table (which is built directly,
-   with no LLM call, and never streamed at all). Confirmed empirically by
-   running a budget question through astream_events before writing this file.
 """
 
 import asyncio
@@ -39,7 +32,6 @@ router = APIRouter(tags=["chat"])
 _SOURCE_PATTERN = re.compile(r"^Source:\s*(.+?)$", re.MULTILINE)
 
 # Nodes whose LLM call produces the user-visible final answer text.
-# (text2sql_node deliberately excluded — see module docstring.)
 _ANSWER_NODES = {"aggregate_answers", "fallback_response", "reasoning_synthesizer"}
 
 

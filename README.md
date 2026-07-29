@@ -16,7 +16,6 @@ A multi-agent RAG (Retrieval-Augmented Generation) system that answers questions
 - **Multi-Hop Reasoning** — breaks complex questions into ordered search steps and chains findings
 - **Human-in-the-loop clarification** — the graph pauses and asks when a query is ambiguous
 - **Web Search Toggle** — DuckDuckGo fallback when documents don't have the answer
-- **Text2SQL** — natural language queries against structured budget data (SQLite)
 - **Hallucination Judge** — LLM-as-Judge scores every answer 1–5 for factual grounding, with a bounded LRU response cache
 - **Hindi Mode** — full Devanagari output with technical terms preserved
 - **User Memory** — semantic memory extracted from conversations, personalizes future responses
@@ -34,7 +33,7 @@ User Message
     ├─ summarize_history        Compact prior context; inject user memories
     ├─ rewrite_query            Clarify + split into sub-questions (structured output)
     │   └─[unclear]──► request_clarification   (HITL interrupt — waits for user)
-    ├─ route_query              Classify: rag | sql | multi_hop
+    ├─ route_query              Classify: rag | multi_hop
     │
     ├─[RAG]──► Send("agent") × N   Parallel agents, one per sub-question
     │           └─ orchestrator → search_chunks → retrieval_grader
@@ -42,8 +41,6 @@ User Message
     │               ├─[token limit]──► compress_context → orchestrator
     │               └─[done]──► collect_answer
     │           └─► aggregate_answers
-    │
-    ├─[SQL]──► text2sql_node        NL → SQL → SQLite → formatted result
     │
     ├─[multi_hop]──► reasoning_planner
     │                └─► execute_reasoning_step (self-loop)
@@ -105,7 +102,6 @@ india-policy-agent/
 │   ├── prompts.py            # All LLM system prompts
 │   ├── judge.py              # Hallucination judge — LLM-as-Judge scorer, LRU cache
 │   ├── retrieval_grader.py   # CRAG relevance grader
-│   ├── text2sql.py           # NL → SQL engine for budget data
 │   ├── memory_store.py       # Semantic user memory (ChromaDB collection)
 │   ├── web_search.py         # DuckDuckGo search tool
 │   ├── history.py            # Conversation metadata (SQLite)
@@ -249,6 +245,6 @@ Runs on Oracle Cloud Infrastructure `e2.1.micro` (1GB RAM, 1 OCPU):
 
 ```bash
 pytest tests/unit/ -v
-# 159 tests across: ingestion, graph nodes, tools, retrieval grader,
-# hallucination judge, memory store, history, text2sql, multi-hop, adaptive retrieval
+# tests across: ingestion, graph nodes, tools, retrieval grader,
+# hallucination judge, memory store, history, multi-hop, adaptive retrieval
 ```

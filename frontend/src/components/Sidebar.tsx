@@ -4,33 +4,58 @@ export default function Sidebar({
   conversations,
   activeThreadId,
   documents,
+  open,
+  onClose,
   onNewChat,
   onSelectConversation,
   onDeleteConversation,
   onUploadClick,
   onIngestAll,
   onOpenMemories,
+  onDeleteDocument,
 }: {
   conversations: ConversationSummary[];
   activeThreadId: string;
   documents: string[];
+  open: boolean;
+  onClose: () => void;
   onNewChat: () => void;
   onSelectConversation: (threadId: string) => void;
   onDeleteConversation: (threadId: string) => void;
   onUploadClick: () => void;
   onIngestAll: () => void;
   onOpenMemories: () => void;
+  onDeleteDocument: (filename: string) => void;
 }) {
   return (
-    <aside className="w-72 shrink-0 h-full bg-bg-elevated border-r border-border flex flex-col">
-      <div className="p-3">
-        <button
-          onClick={onNewChat}
-          className="w-full flex items-center gap-2 rounded-full border border-border-strong px-4 py-2.5 text-sm text-text hover:bg-surface transition-colors"
-        >
-          <span className="text-accent text-lg leading-none">+</span> New chat
-        </button>
-      </div>
+    <>
+      {open && (
+        <div
+          className="fixed inset-0 z-30 bg-black/50 md:hidden"
+          onClick={onClose}
+          aria-hidden="true"
+        />
+      )}
+      <aside
+        className={`fixed inset-y-0 left-0 z-40 w-72 shrink-0 h-full bg-bg-elevated border-r border-border flex flex-col transform transition-transform duration-200 ease-in-out md:static md:translate-x-0 ${
+          open ? "translate-x-0" : "-translate-x-full"
+        }`}
+      >
+        <div className="p-3 flex items-center gap-2">
+          <button
+            onClick={onNewChat}
+            className="flex-1 flex items-center gap-2 rounded-full border border-border-strong px-4 py-2.5 text-sm text-text hover:bg-surface transition-colors"
+          >
+            <span className="text-accent text-lg leading-none">+</span> New chat
+          </button>
+          <button
+            onClick={onClose}
+            className="md:hidden shrink-0 w-9 h-9 rounded-full flex items-center justify-center text-text-secondary hover:bg-surface hover:text-text transition-colors"
+            aria-label="Close menu"
+          >
+            ✕
+          </button>
+        </div>
 
       <div className="px-3 pb-2">
         <div className="flex items-center justify-between text-xs font-medium text-text-muted uppercase tracking-wide px-1 mb-1.5">
@@ -51,10 +76,18 @@ export default function Sidebar({
           {documents.map((doc) => (
             <div
               key={doc}
-              className="text-xs text-text-secondary px-2 py-1 rounded-lg truncate"
-              title={doc}
+              className="group flex items-center justify-between gap-2 text-xs text-text-secondary px-2 py-1 rounded-lg"
             >
-              {doc.endsWith(".pdf") ? "📕" : doc.endsWith(".docx") ? "📘" : "📄"} {doc}
+              <span className="truncate flex-1" title={doc}>
+                {doc.endsWith(".pdf") ? "📕" : doc.endsWith(".docx") ? "📘" : "📄"} {doc}
+              </span>
+              <button
+                onClick={() => onDeleteDocument(doc)}
+                title="Delete document"
+                className="opacity-0 group-hover:opacity-100 text-text-muted hover:text-danger transition-opacity shrink-0"
+              >
+                ✕
+              </button>
             </div>
           ))}
         </div>
@@ -100,6 +133,7 @@ export default function Sidebar({
           🧠 What I remember
         </button>
       </div>
-    </aside>
+      </aside>
+    </>
   );
 }

@@ -6,6 +6,7 @@ import UploadModal from "./components/UploadModal";
 import MemoriesModal from "./components/MemoriesModal";
 import {
   deleteConversation,
+  deleteDocument,
   fetchConversations,
   fetchDocuments,
   fetchMemories,
@@ -32,6 +33,7 @@ export default function App() {
   const [webSearchEnabled, setWebSearchEnabled] = useState(false);
   const [showUpload, setShowUpload] = useState(false);
   const [showMemories, setShowMemories] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -50,17 +52,24 @@ export default function App() {
   const handleNewChat = () => {
     setThreadId(newThreadId());
     setMessages([]);
+    setSidebarOpen(false);
   };
 
   const handleSelectConversation = (id: string) => {
     setThreadId(id);
     setMessages([]);
+    setSidebarOpen(false);
   };
 
   const handleDeleteConversation = async (id: string) => {
     await deleteConversation(id);
     if (id === threadId) handleNewChat();
     refreshConversations();
+  };
+
+  const handleDeleteDocument = async (filename: string) => {
+    await deleteDocument(filename);
+    refreshDocuments();
   };
 
   const handleSend = async (text: string) => {
@@ -176,18 +185,31 @@ export default function App() {
         conversations={conversations}
         activeThreadId={threadId}
         documents={documents}
+        open={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
         onNewChat={handleNewChat}
         onSelectConversation={handleSelectConversation}
         onDeleteConversation={handleDeleteConversation}
         onUploadClick={() => setShowUpload(true)}
         onIngestAll={() => ingestAllDocuments().then(refreshDocuments)}
+        onDeleteDocument={handleDeleteDocument}
         onOpenMemories={() => {
           fetchMemories().then(setMemories).catch(() => {});
           setShowMemories(true);
         }}
       />
 
-      <main className="flex-1 flex flex-col h-full">
+      <main className="flex-1 flex flex-col h-full min-w-0">
+        <div className="md:hidden flex items-center gap-3 px-4 py-3 border-b border-border shrink-0">
+          <button
+            onClick={() => setSidebarOpen(true)}
+            className="w-8 h-8 rounded-full flex items-center justify-center text-text-secondary hover:bg-surface hover:text-text transition-colors"
+            aria-label="Open menu"
+          >
+            ☰
+          </button>
+          <span className="text-sm font-medium text-text-secondary">InsightEngine AI</span>
+        </div>
         <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 pt-8">
           <div className="max-w-3xl mx-auto">
             {messages.length === 0 && (

@@ -78,7 +78,7 @@ class HallucinationJudge:
         """
         Args:
             question: The user's original question.
-            context:  Retrieved chunks (RAG) or SQL result (Text2SQL).
+            context:  Retrieved document chunks used to ground the answer.
             answer:   The final answer shown to the user.
             llm:      LangChain LLM instance.
 
