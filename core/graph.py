@@ -61,7 +61,7 @@ from .prompts import (
 from .judge import HallucinationJudge
 from .tools import ToolFactory, _format_search_results
 from .retrieval_grader import RetrievalGrader
-from .utils import invoke_with_retry, is_provider_error
+from .utils import invoke_with_retry, invoke_resilient, is_provider_error
 from .logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -169,7 +169,7 @@ def _estimate_tokens(messages: list) -> int:
 
 # ── Main graph nodes ───────────────────────────────────────────────────────────
 
-def summarize_history(state: State, llm) -> dict:
+def summarize_history(state: State, llm, fallback_llm=None) -> dict:
     if len(state["messages"]) < 4:
         return {"conversation_summary": ""}
 
@@ -186,10 +186,10 @@ def summarize_history(state: State, llm) -> dict:
         history_text += f"{role}: {m.content}\n"
 
     try:
-        response = llm.invoke([
+        response = invoke_resilient(llm, [
             SystemMessage(content=get_conversation_summary_prompt()),
             HumanMessage(content=history_text),
-        ])
+        ], fallback_llm)
         summary = response.content
 
         # Append user memories to the conversation summary so orchestrator sees them
@@ -212,7 +212,7 @@ def summarize_history(state: State, llm) -> dict:
         }
 
 
-def rewrite_query(state: State, llm) -> dict:
+def rewrite_query(state: State, llm, fallback_llm=None) -> dict:
     last_message = state["messages"][-1]
     summary = state.get("conversation_summary", "")
 
@@ -223,10 +223,11 @@ def rewrite_query(state: State, llm) -> dict:
 
     try:
         structured_llm = llm.with_structured_output(QueryAnalysis)
-        result: QueryAnalysis = structured_llm.invoke([
+        structured_fallback = fallback_llm.with_structured_output(QueryAnalysis) if fallback_llm else None
+        result: QueryAnalysis = invoke_resilient(structured_llm, [
             SystemMessage(content=get_rewrite_query_prompt()),
             HumanMessage(content=context_block),
-        ])
+        ], structured_fallback)
 
         if result.is_clear:
             delete_msgs = [
@@ -271,14 +272,15 @@ def request_clarification(state: State) -> dict:
     return {}
 
 
-def route_query_node(state: State, llm) -> dict:
+def route_query_node(state: State, llm, fallback_llm=None) -> dict:
     combined_q = " | ".join(state["rewritten_questions"])
     try:
         structured_llm = llm.with_structured_output(QueryRoute)
-        result: QueryRoute = structured_llm.invoke([
+        structured_fallback = fallback_llm.with_structured_output(QueryRoute) if fallback_llm else None
+        result: QueryRoute = invoke_resilient(structured_llm, [
             SystemMessage(content=get_query_router_prompt()),
             HumanMessage(content=combined_q),
-        ])
+        ], structured_fallback)
         return {"query_type": result.route}
     except Exception as e:
         if is_provider_error(e):
@@ -287,7 +289,7 @@ def route_query_node(state: State, llm) -> dict:
         return {"query_type": "rag"}
 
 
-def aggregate_answers(state: State, llm) -> dict:
+def aggregate_answers(state: State, llm, fallback_llm=None) -> dict:
     lang    = state.get("answer_language", "english")
     answers = [a for a in state.get("agent_answers", []) if not a.get("__reset__")]
     if not answers:
@@ -311,10 +313,10 @@ def aggregate_answers(state: State, llm) -> dict:
         user_msg = HumanMessage(
             content=f"Original question: {state['original_query']}\n\nRetrieved answers:\n{combined}"
         )
-        response = llm.invoke([
+        response = invoke_resilient(llm, [
             SystemMessage(content=get_aggregation_prompt(language=lang)),
             user_msg,
-        ])
+        ], fallback_llm)
         return {"messages": [AIMessage(content=response.content)]}
     except Exception as e:
         if is_provider_error(e):
@@ -324,7 +326,7 @@ def aggregate_answers(state: State, llm) -> dict:
         return {"messages": [AIMessage(content=fallback)]}
 
 
-def hallucination_judge_node(state: State, llm, judge: HallucinationJudge) -> dict:
+def hallucination_judge_node(state: State, llm, judge: HallucinationJudge, fallback_llm=None) -> dict:
     question = state.get("original_query", "")
 
     final_answer = ""
@@ -337,7 +339,7 @@ def hallucination_judge_node(state: State, llm, judge: HallucinationJudge) -> di
     context = "\n\n---\n\n".join(a.get("answer", "") for a in answers)
 
     try:
-        result = judge.score(question, context, final_answer, llm)
+        result = judge.score(question, context, final_answer, llm, fallback_llm=fallback_llm)
         return {
             "judge_score":   result["score"],
             "judge_reason":  result["reason"],
@@ -450,7 +452,10 @@ def reasoning_synthesizer(state: State, llm) -> dict:
 
 # ── Agent subgraph nodes ───────────────────────────────────────────────────────
 
-def orchestrator(state: AgentState, llm_no_web, llm_with_web) -> dict:
+def orchestrator(
+    state: AgentState, llm_no_web, llm_with_web,
+    llm_no_web_fallback=None, llm_with_web_fallback=None,
+) -> dict:
     lang               = state.get("answer_language", "english")
     doc_filter         = state.get("doc_filter", "")
     user_memories      = state.get("user_memories", [])
@@ -459,7 +464,8 @@ def orchestrator(state: AgentState, llm_no_web, llm_with_web) -> dict:
     # Hard enforcement: bind only the tools the toggle actually allows.
     # llm_no_web has search_chunks only; llm_with_web adds web_search.
     # Selecting here prevents the LLM from calling web_search even if it ignores the prompt.
-    active_llm = llm_with_web if web_search_enabled else llm_no_web
+    active_llm          = llm_with_web if web_search_enabled else llm_no_web
+    active_llm_fallback = llm_with_web_fallback if web_search_enabled else llm_no_web_fallback
 
     memory_context = "\n".join(f"- {m}" for m in user_memories) if user_memories else ""
     prompt_text    = get_orchestrator_prompt(
@@ -485,8 +491,8 @@ def orchestrator(state: AgentState, llm_no_web, llm_with_web) -> dict:
     try:
         if not state.get("messages"):
             human_msg = HumanMessage(content=state["question"])
-            response = invoke_with_retry(
-                active_llm, [sys_msg] + compressed_msgs + [human_msg]
+            response = invoke_resilient(
+                active_llm, [sys_msg] + compressed_msgs + [human_msg], active_llm_fallback
             )
             return {
                 "messages":        [human_msg, response],
@@ -494,7 +500,9 @@ def orchestrator(state: AgentState, llm_no_web, llm_with_web) -> dict:
                 "iteration_count": 1,
             }
 
-        response = invoke_with_retry(active_llm, [sys_msg] + compressed_msgs + state["messages"])
+        response = invoke_resilient(
+            active_llm, [sys_msg] + compressed_msgs + state["messages"], active_llm_fallback
+        )
         return {
             "messages":        [response],
             "tool_call_count": len(response.tool_calls or []),
@@ -783,6 +791,7 @@ def build_graph(
     tool_factory: ToolFactory,
     judge: HallucinationJudge,
     checkpointer=None,
+    fallback_llm=None,
 ):
     if checkpointer is None:
         checkpointer = InMemorySaver()
@@ -797,6 +806,11 @@ def build_graph(
     llm_with_web   = llm.bind_tools(rag_tools_full)
     tool_node      = ToolNode(rag_tools_full)
 
+    # Same tool bindings on the fallback LLM (if configured), so the orchestrator
+    # can retry on it with identical capabilities when the primary LLM is down.
+    llm_no_web_fallback   = fallback_llm.bind_tools(rag_tools_base) if fallback_llm else None
+    llm_with_web_fallback = fallback_llm.bind_tools(rag_tools_full) if fallback_llm else None
+
     # CRAG grader — uses a separate fast model
     from .llm import get_grader_llm
     grader_llm = get_grader_llm()
@@ -805,7 +819,11 @@ def build_graph(
     # ── Agent subgraph ─────────────────────────────────────────────────────
     agent_builder = StateGraph(AgentState)
 
-    agent_builder.add_node("orchestrator",            partial(orchestrator, llm_no_web=llm_no_web, llm_with_web=llm_with_web))
+    agent_builder.add_node("orchestrator",            partial(
+        orchestrator,
+        llm_no_web=llm_no_web, llm_with_web=llm_with_web,
+        llm_no_web_fallback=llm_no_web_fallback, llm_with_web_fallback=llm_with_web_fallback,
+    ))
     agent_builder.add_node("tools",                   tool_node)
     agent_builder.add_node("retrieval_grader",        partial(retrieval_grader_node, grader=grader))
     agent_builder.add_node("query_rewriter_loop",     partial(query_rewriter_loop, llm=llm))
@@ -835,17 +853,18 @@ def build_graph(
     # ── Main graph ─────────────────────────────────────────────────────────
     main_builder = StateGraph(State)
 
-    main_builder.add_node("summarize_history",       partial(summarize_history, llm=llm))
-    main_builder.add_node("rewrite_query",           partial(rewrite_query, llm=llm))
+    main_builder.add_node("summarize_history",       partial(summarize_history, llm=llm, fallback_llm=fallback_llm))
+    main_builder.add_node("rewrite_query",           partial(rewrite_query, llm=llm, fallback_llm=fallback_llm))
     main_builder.add_node("request_clarification",   request_clarification)
-    main_builder.add_node("route_query",             partial(route_query_node, llm=llm))
+    main_builder.add_node("route_query",             partial(route_query_node, llm=llm, fallback_llm=fallback_llm))
     main_builder.add_node("agent",                   agent_subgraph)
-    main_builder.add_node("aggregate_answers",       partial(aggregate_answers, llm=llm))
-    # Multi-hop nodes
+    main_builder.add_node("aggregate_answers",       partial(aggregate_answers, llm=llm, fallback_llm=fallback_llm))
+    # Multi-hop nodes (Groq-only for now — lower usage frequency; raw-retrieval
+    # fallback in api/routes/chat.py still applies if these hit a provider error)
     main_builder.add_node("reasoning_planner",       partial(reasoning_planner, llm=llm))
     main_builder.add_node("execute_reasoning_step",  partial(execute_reasoning_step, tool_factory=tool_factory))
     main_builder.add_node("reasoning_synthesizer",   partial(reasoning_synthesizer, llm=llm))
-    main_builder.add_node("hallucination_judge",     partial(hallucination_judge_node, llm=llm, judge=judge))
+    main_builder.add_node("hallucination_judge",     partial(hallucination_judge_node, llm=llm, judge=judge, fallback_llm=fallback_llm))
 
     main_builder.add_edge(START,                     "summarize_history")
     main_builder.add_edge("summarize_history",       "rewrite_query")

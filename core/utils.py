@@ -44,6 +44,7 @@ def invoke_with_retry(llm, messages):
 # actually scored, because judge.score() itself hit the same rate limit).
 # Instead they should propagate up to api/routes/chat.py's top-level handler,
 # which already maps them to a clear "AI service is busy" message for the user.
+_provider_error_types = [TimeoutError, ConnectionError]
 try:
     import groq
     # groq.APIError is the base class for the SDK's entire exception hierarchy
@@ -52,11 +53,36 @@ try:
     # itself glitches — observed in practice near the daily rate-limit boundary).
     # Catching the base class covers all of these without needing to enumerate
     # every subclass individually.
-    PROVIDER_ERRORS = (groq.APIError, TimeoutError, ConnectionError)
+    _provider_error_types.append(groq.APIError)
 except ImportError:
-    PROVIDER_ERRORS = (TimeoutError, ConnectionError)
+    pass
+try:
+    import openai
+    # Same reasoning as groq.APIError above — the fallback LLM (HuggingFace via
+    # its OpenAI-compatible router) raises this hierarchy on its own failures.
+    _provider_error_types.append(openai.APIError)
+except ImportError:
+    pass
+PROVIDER_ERRORS = tuple(_provider_error_types)
 
 
 def is_provider_error(exc: Exception) -> bool:
-    """True if `exc` means the LLM provider is unavailable (rate limit, outage, network)."""
+    """True if `exc` means an LLM provider is unavailable (rate limit, outage, network)."""
     return isinstance(exc, PROVIDER_ERRORS)
+
+
+def invoke_resilient(primary, messages, fallback=None):
+    """
+    Invoke `primary` (already tool-bound / structured-output-bound if needed);
+    on a provider error, retry once against `fallback` (built the same way from
+    the secondary LLM) if one was given. Raises if both fail, so the caller's
+    own error handling (and ultimately api/routes/chat.py's raw-retrieval
+    fallback) still applies when every provider is down.
+    """
+    try:
+        return invoke_with_retry(primary, messages)
+    except Exception as e:
+        if fallback is not None and is_provider_error(e):
+            logger.warning(f"Primary LLM failed ({type(e).__name__}) — retrying via fallback LLM")
+            return invoke_with_retry(fallback, messages)
+        raise

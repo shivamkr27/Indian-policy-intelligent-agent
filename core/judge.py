@@ -21,7 +21,7 @@ from .config import (
     HALLUCINATION_SAFE_THRESHOLD, HALLUCINATION_WARN_THRESHOLD,
     JUDGE_CACHE_MAX_SIZE,
 )
-from .utils import is_provider_error
+from .utils import is_provider_error, invoke_resilient
 from .logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -75,13 +75,14 @@ class HallucinationJudge:
         payload = f"{question}|{context[:500]}|{answer[:500]}"
         return hashlib.sha256(payload.encode()).hexdigest()
 
-    def score(self, question: str, context: str, answer: str, llm) -> dict:
+    def score(self, question: str, context: str, answer: str, llm, fallback_llm=None) -> dict:
         """
         Args:
-            question: The user's original question.
-            context:  Retrieved document chunks used to ground the answer.
-            answer:   The final answer shown to the user.
-            llm:      LangChain LLM instance.
+            question:     The user's original question.
+            context:      Retrieved document chunks used to ground the answer.
+            answer:       The final answer shown to the user.
+            llm:          LangChain LLM instance (primary).
+            fallback_llm: Optional secondary LLM, tried if `llm` hits a provider error.
 
         Returns:
             dict with keys: score, reason, is_safe, badge
@@ -103,10 +104,11 @@ class HallucinationJudge:
 
         try:
             structured_llm = llm.with_structured_output(JudgeResult)
-            result: JudgeResult = structured_llm.invoke([
+            structured_fallback = fallback_llm.with_structured_output(JudgeResult) if fallback_llm else None
+            result: JudgeResult = invoke_resilient(structured_llm, [
                 SystemMessage(content=_JUDGE_SYSTEM_PROMPT),
                 HumanMessage(content=user_content),
-            ])
+            ], structured_fallback)
             output = {
                 "score":   result.score,
                 "reason":  result.reason,

@@ -9,7 +9,7 @@ DEFAULT_USER_ID only when a request doesn't send an X-User-Id header.
 """
 
 from core.config import RATE_LIMIT_REQUESTS, RATE_LIMIT_WINDOW, HISTORY_DB_PATH
-from core.llm import get_llm
+from core.llm import get_llm, get_fallback_llm
 from core.ingestion import Ingestion
 from core.tools import ToolFactory
 from core.judge import HallucinationJudge
@@ -24,6 +24,7 @@ logger = get_logger(__name__)
 DEFAULT_USER_ID = "default"
 
 llm = None
+fallback_llm = None
 ingestion: Ingestion = None
 tool_factory: ToolFactory = None
 judge: HallucinationJudge = None
@@ -37,10 +38,11 @@ checkpointer = None
 
 def init_sync() -> None:
     """Build everything that doesn't need a running event loop."""
-    global llm, ingestion, tool_factory, judge, memory_store, limiter, upload_limiter, history
+    global llm, fallback_llm, ingestion, tool_factory, judge, memory_store, limiter, upload_limiter, history
 
     logger.info("Initializing InsightEngine AI backend...")
     llm            = get_llm()
+    fallback_llm   = get_fallback_llm()
     ingestion      = Ingestion()
     judge          = HallucinationJudge()
     tool_factory   = ToolFactory(ingestion)
@@ -56,5 +58,5 @@ async def init_async() -> None:
     global graph, checkpointer
 
     checkpointer = await create_checkpointer()
-    graph = build_graph(llm, tool_factory, judge, checkpointer)
+    graph = build_graph(llm, tool_factory, judge, checkpointer, fallback_llm=fallback_llm)
     logger.info("Graph ready.")

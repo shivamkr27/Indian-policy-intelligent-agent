@@ -31,6 +31,12 @@ LLM_TEMPERATURE = 0
 # ── LLM provider ───────────────────────────────────────────────────────────────
 LLM_TIMEOUT  = int(os.environ.get("LLM_TIMEOUT_SECONDS", "30"))
 
+# ── LLM fallback provider (optional) ────────────────────────────────────────────
+# Secondary LLM used on the main chat path when Groq is rate-limited/down.
+# Same model family as GROQ_MODEL for consistent prompt behavior across providers.
+HF_MODEL            = "meta-llama/Llama-3.3-70B-Instruct"
+HF_ROUTER_BASE_URL  = "https://router.huggingface.co/v1"
+
 # ── Retrieval ──────────────────────────────────────────────────────────────────
 DEFAULT_K             = 5
 DENSE_WEIGHT          = 0.6
