@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.errors import GraphRecursionError
 
 from api import singletons
 from api.deps import get_user_id
@@ -171,7 +172,10 @@ async def _stream_chat(req: ChatRequest, user_id: str) -> AsyncGenerator[str, No
         # BM25 + cross-encoder rerank) is 100% local and doesn't need it. Rather
         # than fail outright, show the raw matching document excerpts — no
         # synthesized answer, but still useful, and honestly labeled as such.
-        if is_provider_error(e):
+        # A GraphRecursionError (e.g. a multi-part question needing many more
+        # search/CRAG-retry steps than usual, often because the provider kept
+        # failing along the way) gets the same treatment for the same reason.
+        if is_provider_error(e) or isinstance(e, GraphRecursionError):
             try:
                 params = _get_retrieval_params("auto", req.message)
                 raw_results = await asyncio.to_thread(
@@ -190,16 +194,21 @@ async def _stream_chat(req: ChatRequest, user_id: str) -> AsyncGenerator[str, No
                 fallback_sources = sorted({
                     doc.metadata.get("source", "unknown") for doc, _ in raw_results
                 })
+                busy_reason = (
+                    "this question needed too many search steps to fully process"
+                    if isinstance(e, GraphRecursionError) else
+                    "the AI is temporarily busy (rate limit)"
+                )
                 yield _sse({
                     "type": "final",
                     "content": (
-                        "⚠️ The AI is temporarily busy (rate limit) and can't write a full "
-                        "answer right now, so here is the raw matching text found in your "
-                        "documents instead:\n\n---\n\n" + excerpt_text
+                        f"⚠️ Couldn't write a full answer right now because {busy_reason}, "
+                        "so here is the raw matching text found in your documents instead:"
+                        "\n\n---\n\n" + excerpt_text
                     ),
                     "sources": fallback_sources,
                     "judge_badge": "⚪ Not scored",
-                    "judge_reason": "AI service busy — showing raw retrieval instead of a generated answer.",
+                    "judge_reason": "Showing raw retrieval instead of a generated answer.",
                 })
                 return
 
@@ -210,6 +219,8 @@ async def _stream_chat(req: ChatRequest, user_id: str) -> AsyncGenerator[str, No
             "APIConnectionError": "Couldn't reach the AI service. Please check your connection and try again.",
             "ConnectionError": "Couldn't reach the AI service. Please check your connection and try again.",
             "InternalServerError": "The AI service is having issues right now. Please try again in a moment.",
+            "APIError": "The AI service is having issues right now. Please try again in a moment.",
+            "GraphRecursionError": "This question needed too many steps to fully process. Try breaking it into separate questions (e.g. ask about one document at a time).",
         }
         friendly = err_map.get(type(e).__name__, "Something went wrong. Please try again.")
         yield _sse({"type": "error", "message": friendly})

@@ -114,6 +114,17 @@ def _accumulate_or_reset(existing: List[dict], new: List[dict]) -> List[dict]:
 def _set_union(a: Set[str], b: Set[str]) -> Set[str]:
     return a | b
 
+def _last_write_wins(existing, new):
+    """
+    Reducer for fields that multiple parallel agent branches all write back
+    identically (they're derived from the same single user turn, just fanned
+    out via Send() per rewritten sub-question). Without an explicit reducer,
+    LangGraph raises InvalidUpdateError ("Can receive only one value per
+    step") the moment 2+ sub-questions run concurrently — i.e. any multi-part
+    question — since these fields collide by name with AgentState's copies.
+    """
+    return new
+
 
 class State(MessagesState):
     question_is_clear:   bool  = False
@@ -127,15 +138,15 @@ class State(MessagesState):
     judge_is_safe:       bool  = True
     judge_badge:         str   = ""
     # Feature: Hindi Answer Mode
-    answer_language:     str   = "english"
+    answer_language:     Annotated[str, _last_write_wins]  = "english"
     # Feature: Persistent Semantic Memory
-    user_memories:       List[str] = []
+    user_memories:       Annotated[List[str], _last_write_wins] = []
     # Feature: Multi-Hop Reasoning
     reasoning_steps:     List[str] = []
     current_step_index:  int   = 0
     step_results:        List[str] = []
     # Feature: Web Search
-    web_search_enabled:  bool  = False
+    web_search_enabled:  Annotated[bool, _last_write_wins]  = False
 
 
 class AgentState(MessagesState):
@@ -537,7 +548,7 @@ def retrieval_grader_node(state: AgentState, grader: RetrievalGrader) -> dict:
     return {"last_retrieval_grade": result.grade}
 
 
-def query_rewriter_loop(state: AgentState, llm) -> dict:
+def query_rewriter_loop(state: AgentState, llm, fallback_llm=None) -> dict:
     """Rewrite the last failed search query and inject a hint for the orchestrator to retry."""
     question   = state.get("question", "")
     last_query = ""
@@ -550,7 +561,12 @@ def query_rewriter_loop(state: AgentState, llm) -> dict:
             break
 
     try:
-        response = llm.invoke([
+        # Unlike other main-path nodes, this one degrades to the original
+        # question on ANY failure (including a provider error) rather than
+        # aborting the turn — it's just a query-rephrasing nicety for one CRAG
+        # retry; the orchestrator's own next call already re-raises properly
+        # if the provider is genuinely still down, so nothing gets hidden.
+        response = invoke_resilient(llm, [
             SystemMessage(content=(
                 "Rewrite a failed search query with different keywords. "
                 "Return ONLY the new query — no quotes, no explanation."
@@ -560,11 +576,9 @@ def query_rewriter_loop(state: AgentState, llm) -> dict:
                 f"Failed query: {last_query}\n\n"
                 f"Rewrite with different keywords to find this information:"
             )),
-        ])
+        ], fallback_llm)
         new_query = response.content.strip()
-    except Exception as e:
-        if is_provider_error(e):
-            raise
+    except Exception:
         new_query = question  # fallback to original question
 
     logger.info(f"CRAG rewrite: '{last_query[:50]}' → '{new_query[:50]}'")
@@ -604,7 +618,7 @@ def should_compress_context(
     return Command(update={"retrieval_keys": updated_keys}, goto=goto)
 
 
-def compress_context(state: AgentState, llm) -> dict:
+def compress_context(state: AgentState, llm, fallback_llm=None) -> dict:
     messages  = state["messages"]
     existing  = state.get("context_summary", "").strip()
     done_keys = state.get("retrieval_keys", set())
@@ -625,14 +639,16 @@ def compress_context(state: AgentState, llm) -> dict:
             conv_text += f"[TOOL: {getattr(msg, 'name', 'tool')}]\n{msg.content}\n\n"
 
     try:
-        response = llm.invoke([
+        # This is a context-compaction nicety, not the final answer — degrade to
+        # the raw (truncated) text on any failure, including a provider error,
+        # rather than aborting the turn. The orchestrator's next call still
+        # re-raises properly if the provider is genuinely still down.
+        response = invoke_resilient(llm, [
             SystemMessage(content=get_compress_prompt()),
             HumanMessage(content=conv_text),
-        ])
+        ], fallback_llm)
         new_summary = response.content
     except Exception as e:
-        if is_provider_error(e):
-            raise
         logger.error(f"compress_context failed: {e}", exc_info=True)
         new_summary = existing or conv_text[:2000]
 
@@ -650,7 +666,7 @@ def compress_context(state: AgentState, llm) -> dict:
     }
 
 
-def fallback_response(state: AgentState, llm) -> dict:
+def fallback_response(state: AgentState, llm, fallback_llm=None) -> dict:
     lang = state.get("answer_language", "english")
 
     seen, unique_tool_outputs = set(), []
@@ -677,10 +693,10 @@ def fallback_response(state: AgentState, llm) -> dict:
     )
 
     try:
-        response = llm.invoke([
+        response = invoke_resilient(llm, [
             SystemMessage(content=get_fallback_prompt(language=lang)),
             HumanMessage(content=prompt_content),
-        ])
+        ], fallback_llm)
         return {"messages": [response]}
     except Exception as e:
         if is_provider_error(e):
@@ -826,11 +842,11 @@ def build_graph(
     ))
     agent_builder.add_node("tools",                   tool_node)
     agent_builder.add_node("retrieval_grader",        partial(retrieval_grader_node, grader=grader))
-    agent_builder.add_node("query_rewriter_loop",     partial(query_rewriter_loop, llm=llm))
+    agent_builder.add_node("query_rewriter_loop",     partial(query_rewriter_loop, llm=llm, fallback_llm=fallback_llm))
     agent_builder.add_node("should_compress_context", should_compress_context)
-    agent_builder.add_node("compress_context",        partial(compress_context, llm=llm))
+    agent_builder.add_node("compress_context",        partial(compress_context, llm=llm, fallback_llm=fallback_llm))
     agent_builder.add_node("collect_answer",          collect_answer)
-    agent_builder.add_node("fallback_response",       partial(fallback_response, llm=llm))
+    agent_builder.add_node("fallback_response",       partial(fallback_response, llm=llm, fallback_llm=fallback_llm))
 
     agent_builder.add_edge(START, "orchestrator")
     agent_builder.add_conditional_edges(
