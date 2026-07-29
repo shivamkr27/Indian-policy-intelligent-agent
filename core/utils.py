@@ -46,14 +46,13 @@ def invoke_with_retry(llm, messages):
 # which already maps them to a clear "AI service is busy" message for the user.
 try:
     import groq
-    PROVIDER_ERRORS = (
-        groq.RateLimitError,
-        groq.APITimeoutError,
-        groq.APIConnectionError,
-        groq.InternalServerError,
-        TimeoutError,
-        ConnectionError,
-    )
+    # groq.APIError is the base class for the SDK's entire exception hierarchy
+    # (RateLimitError, APITimeoutError, APIConnectionError, InternalServerError,
+    # and the "Failed to call a function" APIError Groq raises when tool-calling
+    # itself glitches — observed in practice near the daily rate-limit boundary).
+    # Catching the base class covers all of these without needing to enumerate
+    # every subclass individually.
+    PROVIDER_ERRORS = (groq.APIError, TimeoutError, ConnectionError)
 except ImportError:
     PROVIDER_ERRORS = (TimeoutError, ConnectionError)
 

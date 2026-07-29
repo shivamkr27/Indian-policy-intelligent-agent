@@ -23,7 +23,8 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 from api import singletons
 from api.deps import get_user_id
-from core.tools import user_id_ctx
+from core.tools import user_id_ctx, _format_search_results, _get_retrieval_params
+from core.utils import is_provider_error
 from core.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -165,6 +166,43 @@ async def _stream_chat(req: ChatRequest, user_id: str) -> AsyncGenerator[str, No
 
     except Exception as e:
         logger.error(f"chat stream error: {type(e).__name__}: {e}", exc_info=True)
+
+        # The AI provider is down/rate-limited, but hybrid retrieval (ChromaDB +
+        # BM25 + cross-encoder rerank) is 100% local and doesn't need it. Rather
+        # than fail outright, show the raw matching document excerpts — no
+        # synthesized answer, but still useful, and honestly labeled as such.
+        if is_provider_error(e):
+            try:
+                params = _get_retrieval_params("auto", req.message)
+                raw_results = await asyncio.to_thread(
+                    singletons.tool_factory._hybrid_search, req.message, **params
+                )
+                # No LLM is available to silently ignore weak/irrelevant candidates
+                # the way a normal answer would — so drop anything the cross-encoder
+                # scored as actually irrelevant (score <= 0) before showing raw text.
+                raw_results = [(doc, score) for doc, score in raw_results if score > 0]
+            except Exception as fallback_exc:
+                logger.warning(f"Offline retrieval fallback failed: {fallback_exc}")
+                raw_results = []
+
+            if raw_results:
+                excerpt_text = _format_search_results(raw_results, singletons.ingestion)
+                fallback_sources = sorted({
+                    doc.metadata.get("source", "unknown") for doc, _ in raw_results
+                })
+                yield _sse({
+                    "type": "final",
+                    "content": (
+                        "⚠️ The AI is temporarily busy (rate limit) and can't write a full "
+                        "answer right now, so here is the raw matching text found in your "
+                        "documents instead:\n\n---\n\n" + excerpt_text
+                    ),
+                    "sources": fallback_sources,
+                    "judge_badge": "⚪ Not scored",
+                    "judge_reason": "AI service busy — showing raw retrieval instead of a generated answer.",
+                })
+                return
+
         err_map = {
             "RateLimitError": "The AI service is busy right now (rate limit reached). Please try again in a few minutes.",
             "APITimeoutError": "The AI service took too long to respond. Please try again.",
