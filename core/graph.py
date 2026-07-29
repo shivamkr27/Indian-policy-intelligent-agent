@@ -61,7 +61,7 @@ from .prompts import (
 from .judge import HallucinationJudge
 from .tools import ToolFactory, _format_search_results
 from .retrieval_grader import RetrievalGrader
-from .utils import invoke_with_retry
+from .utils import invoke_with_retry, is_provider_error
 from .logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -203,6 +203,8 @@ def summarize_history(state: State, llm) -> dict:
             "agent_answers": [{"__reset__": True}],
         }
     except Exception as e:
+        if is_provider_error(e):
+            raise
         logger.error(f"summarize_history failed: {e}", exc_info=True)
         return {
             "conversation_summary": "",
@@ -249,6 +251,8 @@ def rewrite_query(state: State, llm) -> dict:
         }
 
     except Exception as e:
+        if is_provider_error(e):
+            raise
         logger.error(f"rewrite_query failed: {e}", exc_info=True)
         original = last_message.content
         return {
@@ -277,6 +281,8 @@ def route_query_node(state: State, llm) -> dict:
         ])
         return {"query_type": result.route}
     except Exception as e:
+        if is_provider_error(e):
+            raise
         logger.error(f"route_query_node failed: {e}", exc_info=True)
         return {"query_type": "rag"}
 
@@ -311,6 +317,8 @@ def aggregate_answers(state: State, llm) -> dict:
         ])
         return {"messages": [AIMessage(content=response.content)]}
     except Exception as e:
+        if is_provider_error(e):
+            raise
         logger.error(f"aggregate_answers failed: {e}", exc_info=True)
         fallback = sorted_answers[0]["answer"] if sorted_answers else "Unable to generate a response."
         return {"messages": [AIMessage(content=fallback)]}
@@ -337,12 +345,21 @@ def hallucination_judge_node(state: State, llm, judge: HallucinationJudge) -> di
             "judge_badge":   result["badge"],
         }
     except Exception as e:
+        # Don't re-raise provider errors here even though this IS a provider
+        # error path: the answer above was already generated successfully —
+        # only the judge's scoring call failed. Discarding a good answer just
+        # because the (secondary, cosmetic) scoring step couldn't run would be
+        # worse than showing the answer with an honest "not scored" badge.
         logger.error(f"hallucination_judge_node failed: {e}", exc_info=True)
+        reason = (
+            "AI service was busy — this answer could not be fact-checked."
+            if is_provider_error(e) else "Judge unavailable."
+        )
         return {
-            "judge_score":   1,
-            "judge_reason":  "Judge unavailable.",
+            "judge_score":   0,
+            "judge_reason":  reason,
             "judge_is_safe": True,
-            "judge_badge":   "🟢 Verified",
+            "judge_badge":   "⚪ Not scored",
         }
 
 
@@ -365,6 +382,8 @@ def reasoning_planner(state: State, llm) -> dict:
         ])
         steps = plan.steps[:4] if plan.steps else [question]
     except Exception as e:
+        if is_provider_error(e):
+            raise
         logger.error(f"reasoning_planner failed: {e}", exc_info=True)
         steps = [question]
 
@@ -418,6 +437,8 @@ def reasoning_synthesizer(state: State, llm) -> dict:
         ])
         answer = response.content
     except Exception as e:
+        if is_provider_error(e):
+            raise
         logger.error(f"reasoning_synthesizer failed: {e}", exc_info=True)
         answer = chain_text or "Unable to synthesize multi-hop answer."
 
@@ -480,6 +501,8 @@ def orchestrator(state: AgentState, llm_no_web, llm_with_web) -> dict:
             "iteration_count": 1,
         }
     except Exception as e:
+        if is_provider_error(e):
+            raise
         logger.error(f"orchestrator failed: {e}", exc_info=True)
         return {
             "messages":        [AIMessage(content="Unable to process this request.")],
@@ -531,7 +554,9 @@ def query_rewriter_loop(state: AgentState, llm) -> dict:
             )),
         ])
         new_query = response.content.strip()
-    except Exception:
+    except Exception as e:
+        if is_provider_error(e):
+            raise
         new_query = question  # fallback to original question
 
     logger.info(f"CRAG rewrite: '{last_query[:50]}' → '{new_query[:50]}'")
@@ -598,6 +623,8 @@ def compress_context(state: AgentState, llm) -> dict:
         ])
         new_summary = response.content
     except Exception as e:
+        if is_provider_error(e):
+            raise
         logger.error(f"compress_context failed: {e}", exc_info=True)
         new_summary = existing or conv_text[:2000]
 
@@ -648,6 +675,8 @@ def fallback_response(state: AgentState, llm) -> dict:
         ])
         return {"messages": [response]}
     except Exception as e:
+        if is_provider_error(e):
+            raise
         logger.error(f"fallback_response failed: {e}", exc_info=True)
         return {"messages": [AIMessage(content="Unable to generate a response from retrieved data.")]}
 

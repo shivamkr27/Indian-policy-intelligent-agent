@@ -21,6 +21,7 @@ from .config import (
     HALLUCINATION_SAFE_THRESHOLD, HALLUCINATION_WARN_THRESHOLD,
     JUDGE_CACHE_MAX_SIZE,
 )
+from .utils import is_provider_error
 from .logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -118,11 +119,18 @@ class HallucinationJudge:
             return output
         except Exception as e:
             logger.warning(f"HallucinationJudge failed: {e}")
+            # Don't fabricate a "verified" result — an unscored answer must not
+            # look identical to a genuinely fact-checked one. Distinguish a
+            # provider outage/rate-limit (common, transient) from a real bug.
+            reason = (
+                "AI service was busy — this answer could not be fact-checked."
+                if is_provider_error(e) else "Judge unavailable."
+            )
             return {
-                "score":   1,
-                "reason":  "Judge unavailable.",
+                "score":   0,
+                "reason":  reason,
                 "is_safe": True,
-                "badge":   "🟢 Verified",
+                "badge":   "⚪ Not scored",
             }
 
     @staticmethod

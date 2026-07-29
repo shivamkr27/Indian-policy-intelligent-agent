@@ -57,7 +57,8 @@ class TestCaching:
 
         result = judge.score("Q", "ctx", "answer", mock_llm)
         assert result["is_safe"] is True
-        assert result["badge"] == "🟢 Verified"
+        # Must not claim "Verified" when the judge never actually ran.
+        assert result["badge"] == "⚪ Not scored"
 
     def test_cache_evicts_oldest_entry_beyond_max_size(self, mock_llm):
         from core.judge import JudgeResult

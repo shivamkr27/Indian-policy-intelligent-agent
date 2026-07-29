@@ -166,8 +166,12 @@ async def _stream_chat(req: ChatRequest, user_id: str) -> AsyncGenerator[str, No
     except Exception as e:
         logger.error(f"chat stream error: {type(e).__name__}: {e}", exc_info=True)
         err_map = {
-            "RateLimitError": "The AI service is busy. Please try again in a moment.",
+            "RateLimitError": "The AI service is busy right now (rate limit reached). Please try again in a few minutes.",
+            "APITimeoutError": "The AI service took too long to respond. Please try again.",
             "TimeoutError": "Request timed out. Please try a shorter question.",
+            "APIConnectionError": "Couldn't reach the AI service. Please check your connection and try again.",
+            "ConnectionError": "Couldn't reach the AI service. Please check your connection and try again.",
+            "InternalServerError": "The AI service is having issues right now. Please try again in a moment.",
         }
         friendly = err_map.get(type(e).__name__, "Something went wrong. Please try again.")
         yield _sse({"type": "error", "message": friendly})
